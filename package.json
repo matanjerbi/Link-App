@@ -1,1 +1,1 @@
-{ "name": "link-drop", "private": true, "devDependencies": { "wrangler": "^4" } }
+{ "name": "link-app", "private": true, "devDependencies": { "wrangler": "^4" } }

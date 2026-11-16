@@ -1,27 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
+import PAGE from "./page.html";
 
-const PAGE = "<!DOCTYPE html>\n<html lang=\"he\" dir=\"rtl\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>שלח קישור</title>\n<style>\n  *{box-sizing:border-box}\n  body{margin:0;font-family:system-ui,-apple-system,\"Segoe UI\",Arial,sans-serif;background:#0f1115;color:#eef0f3;min-height:100vh;display:flex;justify-content:center}\n  .wrap{width:100%;max-width:460px;padding:28px 18px}\n  h1{font-size:26px;margin:0 0 4px}\n  .sub{color:#9aa3af;margin:0 0 24px;font-size:15px}\n  .card{background:#181b22;border:1px solid #262b35;border-radius:16px;padding:18px;margin-bottom:16px}\n  label{display:block;font-size:13px;color:#9aa3af;margin-bottom:6px}\n  input{width:100%;padding:14px;border-radius:12px;border:1px solid #2f3542;background:#0f1115;color:#fff;font-size:17px;outline:none}\n  input:focus{border-color:#6d8bff}\n  #code{text-align:center;letter-spacing:6px;font-size:24px;font-weight:700;text-transform:uppercase}\n  button{width:100%;padding:14px;border:0;border-radius:12px;background:#6d8bff;color:#fff;font-size:17px;font-weight:600;margin-top:10px;cursor:pointer}\n  button.ghost{background:transparent;border:1px solid #2f3542;color:#cdd3dc}\n  button:disabled{opacity:.5}\n  .row{display:flex;gap:8px}\n  .row button{margin-top:10px}\n  .roomcode{font-size:34px;font-weight:800;letter-spacing:8px;text-align:center;margin:4px 0}\n  .hint{font-size:13px;color:#9aa3af;text-align:center}\n  .link{display:block;background:#0f1115;border:1px solid #2f3542;border-radius:12px;padding:12px;margin-top:10px;color:#8fb0ff;word-break:break-all;text-decoration:none;font-size:15px}\n  .meta{font-size:12px;color:#6b7280;margin-top:4px}\n  .err{color:#ff8a8a;font-size:14px;margin-top:8px;min-height:1em}\n  .hidden{display:none}\n</style>\n</head>\n<body>\n<div class=\"wrap\">\n  <h1>🔗 שלח קישור</h1>\n  <p class=\"sub\">שניכם נכנסים עם אותו קוד, אחד שולח קישור – השני רואה אותו מיד.</p>\n\n  <div id=\"join\" class=\"card\">\n    <label for=\"code\">קוד חדר</label>\n    <input id=\"code\" maxlength=\"8\" autocomplete=\"off\" placeholder=\"ABCD\">\n    <div class=\"row\">\n      <button id=\"joinBtn\">כניסה</button>\n      <button id=\"newBtn\" class=\"ghost\">קוד חדש</button>\n    </div>\n    <div id=\"err1\" class=\"err\"></div>\n  </div>\n\n  <div id=\"room\" class=\"hidden\">\n    <div class=\"card\">\n      <div class=\"hint\">הקוד שלכם – תנו אותו (או את הקישור) לצד השני</div>\n      <div id=\"roomCode\" class=\"roomcode\"></div>\n      <button id=\"copyCode\" class=\"ghost\">העתק קישור לחדר</button>\n    </div>\n    <div class=\"card\">\n      <label for=\"url\">קישור לשליחה</label>\n      <input id=\"url\" type=\"url\" inputmode=\"url\" placeholder=\"https://...\" autocomplete=\"off\">\n      <button id=\"sendBtn\">שלח</button>\n      <div id=\"err2\" class=\"err\"></div>\n    </div>\n    <div class=\"card\">\n      <label>קישורים בחדר (נמחקים אחרי 24 שעות)</label>\n      <div id=\"list\"><div class=\"hint\">עוד לא נשלח קישור</div></div>\n    </div>\n    <button id=\"leave\" class=\"ghost\">יציאה מהחדר</button>\n  </div>\n</div>\n\n<script>\nconst $ = id => document.getElementById(id);\nlet room = null, timer = null, lastJson = \"\";\n\nfunction randCode(){\n  const a = \"ABCDEFGHJKLMNPQRSTUVWXYZ23456789\";\n  let s = \"\"; for (let i=0;i<5;i++) s += a[Math.floor(Math.random()*a.length)];\n  return s;\n}\nfunction clean(c){ return (c||\"\").toUpperCase().replace(/[^A-Z0-9]/g,\"\").slice(0,8); }\nfunction normUrl(u){\n  u = (u||\"\").trim(); if (!u) return null;\n  if (!/^https?:\\/\\//i.test(u)) u = \"https://\" + u;\n  try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch(e){ return null; }\n}\nfunction ago(ts){\n  const s = Math.max(0, Math.round((Date.now()-ts)/1000));\n  if (s < 60) return \"עכשיו\";\n  if (s < 3600) return \"לפני \" + Math.floor(s/60) + \" דק׳\";\n  return \"לפני \" + Math.floor(s/3600) + \" שע׳\";\n}\nfunction myId(){\n  try { let v = localStorage.getItem(\"ld_me\"); if (!v) { v = Math.random().toString(36).slice(2); localStorage.setItem(\"ld_me\", v); } return v; }\n  catch(e){ return window._me || (window._me = Math.random().toString(36).slice(2)); }\n}\n\nfunction enter(code){\n  code = clean(code);\n  if (code.length < 3) { $(\"err1\").textContent = \"קוד של 3–8 תווים\"; return; }\n  $(\"err1\").textContent = \"\";\n  room = code; lastJson = \"\";\n  history.replaceState(null, \"\", \"#\" + code);\n  $(\"roomCode\").textContent = code;\n  $(\"join\").classList.add(\"hidden\"); $(\"room\").classList.remove(\"hidden\");\n  $(\"url\").focus();\n  poll(); clearInterval(timer); timer = setInterval(poll, 2000);\n}\n\nasync function poll(){\n  if (!room) return;\n  try {\n    const r = await fetch(\"/api/r/\" + room, { cache: \"no-store\" });\n    const j = await r.json();\n    const txt = JSON.stringify(j.links || []);\n    if (txt !== lastJson) { lastJson = txt; render(j.links || []); }\n    else updateTimes();\n  } catch(e) {}\n}\n\nfunction render(items){\n  const list = $(\"list\"); list.innerHTML = \"\";\n  if (!items.length) { list.innerHTML = '<div class=\"hint\">עוד לא נשלח קישור</div>'; return; }\n  const me = myId();\n  for (const it of items.slice().reverse()) {\n    const a = document.createElement(\"a\");\n    a.className = \"link\"; a.href = it.url; a.target = \"_blank\"; a.rel = \"noopener noreferrer\";\n    a.textContent = it.url;\n    const m = document.createElement(\"div\"); m.className = \"meta\"; m.dataset.at = it.at;\n    m.dataset.who = it.by === me ? \"שלחת\" : \"התקבל\";\n    m.textContent = m.dataset.who + \" · \" + ago(it.at);\n    a.appendChild(m); list.appendChild(a);\n  }\n}\nfunction updateTimes(){\n  document.querySelectorAll(\".meta[data-at]\").forEach(m => m.textContent = m.dataset.who + \" · \" + ago(+m.dataset.at));\n}\n\nasync function send(){\n  const u = normUrl($(\"url\").value);\n  if (!u) { $(\"err2\").textContent = \"זה לא נראה כמו קישור\"; return; }\n  $(\"sendBtn\").disabled = true; $(\"err2\").textContent = \"\";\n  try {\n    const r = await fetch(\"/api/r/\" + room, { method: \"POST\", headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ url: u, by: myId() }) });\n    if (!r.ok) throw 0;\n    $(\"url\").value = \"\"; $(\"err2\").textContent = \"נשלח ✓\"; setTimeout(() => $(\"err2\").textContent = \"\", 1500);\n    poll();\n  } catch(e) { $(\"err2\").textContent = \"השליחה נכשלה, נסו שוב\"; }\n  $(\"sendBtn\").disabled = false;\n}\n\n$(\"joinBtn\").onclick = () => enter($(\"code\").value);\n$(\"newBtn\").onclick = () => enter(randCode());\n$(\"code\").addEventListener(\"keydown\", e => { if (e.key === \"Enter\") enter($(\"code\").value); });\n$(\"sendBtn\").onclick = send;\n$(\"url\").addEventListener(\"keydown\", e => { if (e.key === \"Enter\") send(); });\n$(\"copyCode\").onclick = async () => {\n  const share = location.origin + \"/#\" + room;\n  try { await navigator.clipboard.writeText(share); $(\"copyCode\").textContent = \"הקישור לחדר הועתק ✓\"; }\n  catch(e){ $(\"copyCode\").textContent = share; }\n  setTimeout(() => $(\"copyCode\").textContent = \"העתק קישור לחדר\", 2000);\n};\n$(\"leave\").onclick = () => {\n  clearInterval(timer); room = null;\n  history.replaceState(null, \"\", location.pathname);\n  $(\"room\").classList.add(\"hidden\"); $(\"join\").classList.remove(\"hidden\"); $(\"code\").value = \"\";\n};\ndocument.addEventListener(\"visibilitychange\", () => { if (!document.hidden) poll(); });\nif (location.hash.length > 1) enter(location.hash.slice(1));\n</script>\n</body>\n</html>\n";
-const TTL = 24 * 60 * 60 * 1000;
-const MAX_LINKS = 30;
+const TTL = 24 * 60 * 60 * 1000; // room is wiped 24h after the last message
+const MAX_MSGS = 300;
 
-export class Box extends DurableObject {
+export class Room extends DurableObject {
   async fetch(req) {
+    const msgs = (await this.ctx.storage.get("msgs")) || [];
     if (req.method === "POST") {
       let body;
       try { body = await req.json(); } catch { return json({ error: "bad json" }, 400); }
-      const url = String(body.url || "");
+      const text = String(body.text || "").trim().slice(0, 2000);
       const by = String(body.by || "").slice(0, 40);
-      if (url.length > 2000 || !/^https?:\/\//i.test(url)) return json({ error: "bad url" }, 400);
-      try { new URL(url); } catch { return json({ error: "bad url" }, 400); }
-      const links = (await this.ctx.storage.get("links")) || [];
-      links.push({ url, by, at: Date.now() });
-      while (links.length > MAX_LINKS) links.shift();
-      await this.ctx.storage.put("links", links);
+      if (!text) return json({ error: "empty" }, 400);
+      const lastAt = msgs.length ? msgs[msgs.length - 1].at : 0;
+      const at = Math.max(Date.now(), lastAt + 1); // strictly increasing, used as cursor
+      msgs.push({ text, by, at });
+      while (msgs.length > MAX_MSGS) msgs.shift();
+      await this.ctx.storage.put("msgs", msgs);
       await this.ctx.storage.setAlarm(Date.now() + TTL);
-      return json({ ok: true });
+      return json({ ok: true, at });
     }
-    const links = ((await this.ctx.storage.get("links")) || []).filter(l => Date.now() - l.at < TTL);
-    return json({ links });
+    const after = Number(new URL(req.url).searchParams.get("after")) || 0;
+    return json({ msgs: msgs.filter(m => m.at > after) });
   }
   async alarm() { await this.ctx.storage.deleteAll(); }
 }
@@ -36,8 +37,7 @@ export default {
     const m = u.pathname.match(/^\/api\/r\/([A-Za-z0-9]{3,8})$/);
     if (m) {
       if (req.method !== "GET" && req.method !== "POST") return json({ error: "method" }, 405);
-      const stub = env.BOX.get(env.BOX.idFromName(m[1].toUpperCase()));
-      return stub.fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(m[1].toUpperCase())).fetch(req);
     }
     if (u.pathname === "/" || u.pathname === "/index.html") {
       return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
